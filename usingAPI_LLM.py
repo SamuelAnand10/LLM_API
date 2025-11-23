@@ -73,8 +73,8 @@ def get_prediction(client, prompt: str):
         with st.spinner(f"Sending prompt and awaiting response..."):
             result = client.predict(
                 q=prompt,
-                mt=128,    # Max Tokens
-                t=0.7,     # Temperature
+                mt=170,    # Max Tokens
+                t=0.1,     # Temperature
                 p=0.95,    # Top P
                 api_name=API_NAME
             )
