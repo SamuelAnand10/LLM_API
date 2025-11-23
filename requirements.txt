@@ -1,0 +1,9 @@
+transformers
+datasets
+accelerate
+peft
+bitsandbytes
+safetensors
+sentencepiece
+huggingface_hub
+tqdm
