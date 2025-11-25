@@ -97,7 +97,7 @@ def init_pinecone(api_key: str, env: str, index_name: str, dim: int):
 
 def index_chunks_to_pinecone(idx, embedder, title, chunks, source_path, batch_size=64):
     n = len(chunks)
-    st.info(f"Indexing {n} chunks into Pinecone (index: {idx.index_name})...")
+    st.info(f"Indexing {n} chunks into Pinecone (index: {PINECONE_INDEX})...")
     for i in range(0, n, batch_size):
         batch = chunks[i:i+batch_size]
         embeddings = embedder.encode(batch, normalize_embeddings=True)
