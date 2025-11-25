@@ -70,10 +70,19 @@ def chunk_text(text: str, max_chars:int = 800) -> List[str]:
 def init_pinecone(api_key: str, env: str, index_name: str, dim: int):
     if not api_key:
         raise ValueError("PINECONE_API_KEY not set in environment.")
-    pinecone.init(api_key=api_key, environment=env)
-    if index_name not in pinecone.list_indexes():
-        pinecone.create_index(index_name, dimension=dim, metric="cosine")
-    return pinecone.Index(index_name)
+    pc = Pinecone(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
+    EMBED_DIM = embedder.get_sentence_embedding_dimension()
+    if index_name not in pc.list_indexes():
+        pc.create_index(
+        name=PINECONE_INDEX,
+        dimension=EMBED_DIM,
+        metric="cosine",
+        spec=ServerlessSpec(
+            cloud="aws",
+            region=PINECONE_ENV
+        )
+    )
+    return pc.Index(index_name)
 
 def index_chunks_to_pinecone(idx, embedder, title, chunks, source_path, batch_size=64):
     n = len(chunks)
