@@ -151,84 +151,72 @@ def optionally_send_to_gradio(gradio_url: str, local_file_path: str):
 def send_query_to_gradio_api(gradio_url: str, question: str, max_new_tokens:int=128,
                              temperature:float=0.7, top_p:float=0.95,
                              use_rag:bool=False, top_k:int=4, show_docs:bool=False,
-                             timeout: int = 30):
+                             timeout: int = 30) -> Tuple[Any, Dict, Dict]:
     """
-    Robust POST to a Gradio share /api/predict/ endpoint.
-    Tries payloads that Gradio commonly expects, including fn_index.
-    Returns (status_code, response_json, debug_info)
-    - status_code may be None if request failed entirely.
-    - response_json is parsed JSON or a dict with 'raw_text' or 'error'.
-    - debug_info tells which URL/payloads were attempted.
+    Call the Gradio app using the discovered api_name '/_generate' and named args.
+    Returns (status_code_or_None, parsed_response_or_error_dict, debug_info)
     """
-
-    base = gradio_url.rstrip("/") + "/"
-    predict_path = "api/predict/"
-    predict_url = urllib.parse.urljoin(base, predict_path)
-
-    # Build data (we assume your remote function signature ordering)
-    data_list = [
-        question,
-        int(max_new_tokens),
-        float(temperature),
-        float(top_p),
-        bool(use_rag),
-        int(top_k),
-        bool(show_docs)
-    ]
-
-    headers = {"Content-Type": "application/json"}
-    attempts = []
-
-    # 1) Try gradio_client if available (preferred)
-    if HAVE_GRADIO:
-        try:
-            client = GradioClient(gradio_url)
-            # gradio_client.predict uses the python-callable signature, no fn_index needed
-            res = client.predict(question, int(max_new_tokens), float(temperature),
-                                 float(top_p), bool(use_rag), int(top_k), bool(show_docs),
-                                 api_name="/predict", timeout=timeout)
-            return 200, res, {"method": "gradio_client.predict", "url": gradio_url}
-        except Exception as e:
-            attempts.append({"method": "gradio_client.predict", "error": str(e)})
-
-    # 2) Try POST with fn_index = 0 (most common)
-    payloads = [
-        {"fn_index": 0, "data": data_list},
-        # 3) fallback: no fn_index (some older/simple endpoints accept this)
-        {"data": data_list},
-        # 4) sometimes servers expect fn_index as string (rare) or query param; include query param attempt below
-    ]
-
-    for payload in payloads:
-        try:
-            resp = requests.post(predict_url, json=payload, headers=headers, timeout=timeout)
-            try:
-                j = resp.json()
-            except Exception:
-                j = {"raw_text": resp.text}
-            attempts.append({"url": predict_url, "payload": payload, "status_code": resp.status_code, "response_preview": str(j)[:500]})
-            # 200-299 -> success
-            if 200 <= resp.status_code < 300:
-                return resp.status_code, j, {"attempts": attempts}
-        except Exception as e:
-            attempts.append({"url": predict_url, "payload": payload, "error": str(e)})
-
-    # 5) Try adding fn_index as query parameter (some edge cases)
+    debug = {"attempts": []}
     try:
-        qurl = predict_url + "?fn_index=0"
-        resp = requests.post(qurl, json={"data": data_list}, headers=headers, timeout=timeout)
-        try:
-            j = resp.json()
-        except Exception:
-            j = {"raw_text": resp.text}
-        attempts.append({"url": qurl, "payload": {"data": data_list}, "status_code": resp.status_code, "response_preview": str(j)[:500]})
-        if 200 <= resp.status_code < 300:
-            return resp.status_code, j, {"attempts": attempts}
-    except Exception as e:
-        attempts.append({"url": predict_url + "?fn_index=0", "error": str(e)})
+        # Normalize base and build generate URL
+        base = gradio_url.rstrip("/") + "/"
+        generate_api_path = "_generate"          # note leading underscore per your discovery
+        generate_url = urllib.parse.urljoin(base, generate_api_path)
 
-    # Nothing worked
-    return None, {"error": "All attempts failed", "attempts": attempts}, {"attempts": attempts}
+        # 1) Preferred: use gradio_client (keeps exactly the same signature as your tested call)
+        if HAVE_GRADIO:
+            try:
+                client = GradioClient(gradio_url)
+                res = client.predict(
+                    q=question,
+                    mt=int(max_new_tokens),
+                    t=float(temperature),
+                    p=float(top_p),
+                    rag=bool(use_rag),
+                    k=int(top_k),
+                    show_docs_flag=bool(show_docs),
+                    api_name="/_generate",
+                    timeout=timeout
+                )
+                debug["attempts"].append({"method": "gradio_client.predict", "api_name": "/_generate", "result_preview": str(res)[:1000]})
+                return 200, res, debug
+            except Exception as e:
+                debug["attempts"].append({"method": "gradio_client.predict", "error": repr(e), "trace": traceback.format_exc()})
+
+        # 2) HTTP POST fallback to the discovered path '/_generate'
+        try:
+            payload = {
+                "q": question,
+                "mt": int(max_new_tokens),
+                "t": float(temperature),
+                "p": float(top_p),
+                "rag": bool(use_rag),
+                "k": int(top_k),
+                "show_docs_flag": bool(show_docs)
+            }
+            headers = {"Content-Type": "application/json"}
+            r = requests.post(generate_url, json=payload, headers=headers, timeout=timeout)
+            try:
+                parsed = r.json()
+            except Exception:
+                parsed = {"raw_text": r.text}
+            debug["attempts"].append({
+                "method": "http_post_direct",
+                "url": generate_url,
+                "payload_preview": str(payload)[:1000],
+                "status_code": r.status_code,
+                "response_preview": str(parsed)[:1000]
+            })
+            if 200 <= r.status_code < 300:
+                return r.status_code, parsed, debug
+        except Exception as e:
+            debug["attempts"].append({"method": "http_post_direct", "url": generate_url, "error": repr(e), "trace": traceback.format_exc()})
+
+        # nothing worked
+        return None, {"error": "All attempts failed (tried gradio_client and POST to /_generate)."}, debug
+
+    except Exception as e:
+        return None, {"error": "Unexpected exception in send_query_to_gradio_api", "exception": repr(e), "trace": traceback.format_exc()}, debug
 
 # ---------- Streamlit UI ----------
 st.set_page_config(page_title="RAG uploader (Streamlit)", layout="centered")
