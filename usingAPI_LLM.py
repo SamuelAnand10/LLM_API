@@ -4,6 +4,8 @@ import streamlit as st
 from uuid import uuid4
 from io import BytesIO
 import tempfile
+import requests
+import json
 
 # PDF reading
 from PyPDF2 import PdfReader
@@ -29,6 +31,7 @@ PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY", "")   # set in env / secre
 PINECONE_ENV = os.environ.get("PINECONE_ENV", "us-east-1")
 PINECONE_INDEX = os.environ.get("PINECONE_INDEX", "rag-files")
 GRADIO_PUBLIC_URL = os.environ.get("GRADIO_PUBLIC_URL", "https://f4b1bb5c13d8313f42.gradio.live/")  # optional
+GRADIO_PREDICT = os.path.join(GRADIO_PUBLIC_URL.rstrip("/"), "api/predict/")
 
 # Developer-provided local path fallback (per dev instruction)
 DEV_UPLOADED_PATH = "/mnt/data/1814dcfa-776c-40c6-aedb-fea130de1f2a.png"
@@ -71,33 +74,51 @@ def chunk_text(text: str, max_chars:int = 800) -> List[str]:
 
 @st.cache_resource
 def init_pinecone(api_key: str, env: str, index_name: str, dim: int):
+    """
+    Initialize Pinecone: create index if not exists, return Index object.
+    Uses passed api_key/env/index_name/dim so it's not dependent on globals.
+    Attaches index_name attribute to the returned Index for backwards compatibility.
+    """
     if not api_key:
         raise ValueError("PINECONE_API_KEY not set in environment.")
-    pc = Pinecone(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
-    EMBED_DIM = embedder.get_sentence_embedding_dimension()
+    # Create client and index (ServerlessSpec kept from your original code)
+    pc = Pinecone(api_key=api_key, environment=env)
     try:
         pc.create_index(
-            name=PINECONE_INDEX,
-            dimension=EMBED_DIM,
+            name=index_name,
+            dimension=dim,
             metric="cosine",
             spec=ServerlessSpec(
                 cloud="aws",
-                region=PINECONE_ENV
+                region=env
             )
         )
-        print(f"Created Pinecone index: {PINECONE_INDEX}")
+        print(f"Created Pinecone index: {index_name}")
     except PineconeApiException as e:
-    # Check if the error is due to the index already existing
-        if e.status == 409 and "ALREADY_EXISTS" in str(e.body):
-            print(f"Pinecone index '{PINECONE_INDEX}' already exists. Connecting to existing index.")
-        else:
-        # Re-raise other Pinecone API exceptions
-            raise e
-    return pc.Index(index_name)
+        # If index already exists, continue; else re-raise
+        try:
+            if getattr(e, "status", None) == 409 or "ALREADY_EXISTS" in str(getattr(e, "body", "")):
+                print(f"Pinecone index '{index_name}' already exists. Connecting to existing index.")
+            else:
+                raise e
+        except Exception:
+            # If SDK shapes differ, try string match
+            if "ALREADY_EXISTS" in str(e):
+                print(f"Pinecone index '{index_name}' already exists. Connecting to existing index.")
+            else:
+                raise e
+    idx = pc.Index(index_name)
+    # attach index_name for compatibility with other parts of the code
+    try:
+        setattr(idx, "index_name", index_name)
+    except Exception:
+        pass
+    return idx
 
 def index_chunks_to_pinecone(idx, embedder, title, chunks, source_path, batch_size=64):
     n = len(chunks)
-    st.info(f"Indexing {n} chunks into Pinecone (index: {PINECONE_INDEX})...")
+    display_index = getattr(idx, "index_name", "<unknown_index>")
+    st.info(f"Indexing {n} chunks into Pinecone (index: {display_index})...")
     for i in range(0, n, batch_size):
         batch = chunks[i:i+batch_size]
         embeddings = embedder.encode(batch, normalize_embeddings=True)
@@ -124,6 +145,49 @@ def optionally_send_to_gradio(gradio_url: str, local_file_path: str):
     except Exception as e:
         st.error(f"Failed to call Gradio endpoint: {e}")
         return None
+
+def send_query_to_gradio_api(gradio_url: str, question: str, max_new_tokens:int=128, temperature:float=0.7, top_p:float=0.95, use_rag:bool=False, top_k:int=4, show_docs:bool=False):
+    """
+    Best-effort POST to a Gradio /api/predict/ endpoint.
+    The payload matches your Colab Gradio signature: [prompt, max_new_tokens, temperature, top_p, use_rag, top_k, show_docs]
+    If gradio_client is installed and the URL is reachable, prefer that.
+    Returns (status_code, json_response) or (None, None) on failure.
+    """
+    predict_url = os.path.join(gradio_url.rstrip("/"), "api/predict/")
+    payload = {
+        "data": [
+            question,
+            int(max_new_tokens),
+            float(temperature),
+            float(top_p),
+            bool(use_rag),
+            int(top_k),
+            bool(show_docs)
+        ]
+    }
+    headers = {"Content-Type": "application/json"}
+    # Try gradio_client first (if installed)
+    if HAVE_GRADIO:
+        try:
+            client = GradioClient(gradio_url)
+            # Note: gradio_client's predict may accept positional args matching the function signature
+            # We'll call predict with the same order: question, max_new_tokens, temperature, top_p, use_rag, top_k, show_docs
+            res = client.predict(question, int(max_new_tokens), float(temperature), float(top_p), bool(use_rag), int(top_k), bool(show_docs), api_name="/predict", timeout=60)
+            # gradio_client returns python structure already; wrap into a consistent dict
+            return 200, res
+        except Exception:
+            # fallback to HTTP POST
+            pass
+
+    # HTTP POST fallback
+    try:
+        resp = requests.post(predict_url, json=payload, headers=headers, timeout=30)
+        try:
+            return resp.status_code, resp.json()
+        except Exception:
+            return resp.status_code, {"raw_text": resp.text}
+    except Exception as e:
+        return None, {"error": str(e)}
 
 # ---------- Streamlit UI ----------
 st.set_page_config(page_title="RAG uploader (Streamlit)", layout="centered")
@@ -206,7 +270,58 @@ else:
                     tmp.flush()
                     tmp.close()
                     path_to_send = tmp.name
-                
+                optionally_send_to_gradio(GRADIO_PUBLIC_URL, path_to_send)
+
+# ----------------- Query UI (send question to your Colab/Gradio model) -----------------
+st.markdown("---")
+st.header("Ask your LLM (Colab / Gradio) — with RAG")
+st.write("This will POST to your Gradio app's `/api/predict/` endpoint. Make sure your Colab Gradio app is running and `share=True` if it's remote.")
+
+q_col1, q_col2 = st.columns([3,1])
+with q_col1:
+    question = st.text_area("Question", value="Summarize the uploaded document in 2 sentences.", height=120)
+with q_col2:
+    q_max_t = st.number_input("max_new_tokens", min_value=16, max_value=1024, value=128)
+    q_temp = st.number_input("temperature", min_value=0.01, max_value=2.0, value=0.7, format="%.2f")
+    q_top_p = st.number_input("top_p", min_value=0.01, max_value=1.0, value=0.95, format="%.2f")
+    q_use_rag = st.checkbox("Use RAG (let remote model query Pinecone)", value=True)
+    q_top_k = st.slider("RAG: top_k", 1, 10, value=4)
+    q_show_docs = st.checkbox("Show retrieved docs (if remote returns them)", value=True)
+
+if st.button("Send question to LLM"):
+    if not GRADIO_PUBLIC_URL:
+        st.error("GRADIO_PUBLIC_URL not set. Set the env var or Streamlit secrets to your Gradio share URL.")
+    else:
+        with st.spinner("Sending query to Gradio predict API..."):
+            status, resp = send_query_to_gradio_api(GRADIO_PUBLIC_URL, question, max_new_tokens=q_max_t, temperature=q_temp, top_p=q_top_p, use_rag=q_use_rag, top_k=q_top_k, show_docs=q_show_docs)
+            if status is None:
+                st.error(f"Request failed: {resp.get('error')}")
+                st.info("Common causes: Gradio share session expired, remote server blocks programmatic access, or wrong endpoint.")
+            else:
+                st.write("Status:", status)
+                st.subheader("Model response (raw):")
+                # Gradio /api/predict/ often returns {"data": [...outputs...], "duration":..., ...}
+                if isinstance(resp, dict) and 'data' in resp and isinstance(resp['data'], list):
+                    # Usually the first element is model text; but remote apps vary — show everything
+                    try:
+                        # Prefer first item
+                        primary = resp['data'][0]
+                        # If primary is a string, show it raw; if list/dict, pretty-print
+                        if isinstance(primary, str):
+                            st.text_area("LLM output", primary, height=300)
+                        else:
+                            st.json(primary)
+                    except Exception:
+                        st.json(resp['data'])
+                    # If the remote app returned structured docs, try to display them too
+                    # Some remote implementations return the retrieved docs as a 2nd item or embedded in a dict
+                    st.markdown("----")
+                    st.subheader("Full response JSON")
+                    st.json(resp)
+                else:
+                    # fallback: just print the whole response object
+                    st.write(resp)
 
 st.markdown("---")
 st.caption("Security: never commit your Pinecone API key. Revoke any keys you posted in public and create a new one.")
+
