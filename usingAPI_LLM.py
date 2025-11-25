@@ -84,7 +84,7 @@ def init_pinecone(api_key: str, env: str, index_name: str, dim: int):
                 region=PINECONE_ENV
             )
         )
-    print(f"Created Pinecone index: {INDEX_NAME}")
+        print(f"Created Pinecone index: {INDEX_NAME}")
     except PineconeApiException as e:
     # Check if the error is due to the index already existing
         if e.status == 409 and "ALREADY_EXISTS" in str(e.body):
