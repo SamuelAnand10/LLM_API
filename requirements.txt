@@ -17,4 +17,4 @@ pinecone
 numpy
 requests
 python-dotenv
-urllib.parse
+urllib
