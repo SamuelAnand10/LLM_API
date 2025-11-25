@@ -6,6 +6,8 @@ from io import BytesIO
 import tempfile
 import requests
 import json
+import urllib.parse
+
 
 # PDF reading
 from PyPDF2 import PdfReader
