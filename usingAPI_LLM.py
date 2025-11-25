@@ -11,6 +11,8 @@ from PyPDF2 import PdfReader
 # Embedding + Pinecone
 from sentence_transformers import SentenceTransformer
 from pinecone import Pinecone
+from pinecone import ServerlessSpec
+
 import numpy as np
 from typing import List
 
