@@ -8,6 +8,7 @@ import requests
 import json
 import urllib.parse
 from typing import Tuple, Any, Dict
+import traceback
 
 
 # PDF reading
@@ -177,7 +178,6 @@ def send_query_to_gradio_api(gradio_url: str, question: str, max_new_tokens:int=
                     k=int(top_k),
                     show_docs_flag=bool(show_docs),
                     api_name="/_generate",
-                    timeout=timeout
                 )
                 debug["attempts"].append({"method": "gradio_client.predict", "api_name": "/_generate", "result_preview": str(res)[:1000]})
                 return 200, res, debug
