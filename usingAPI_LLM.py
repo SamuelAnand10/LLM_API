@@ -10,7 +10,7 @@ from PyPDF2 import PdfReader
 
 # Embedding + Pinecone
 from sentence_transformers import SentenceTransformer
-import pinecone
+from pinecone import Pinecone
 import numpy as np
 from typing import List
 
