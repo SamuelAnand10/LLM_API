@@ -8,21 +8,12 @@ sentencepiece
 huggingface_hub
 tqdm
 gradio_client
-# PDF processing
 PyPDF2
-
-# Embeddings
 sentence-transformers
 transformers
 tokenizers
 torch
-
-# Pinecone
 pinecone
-
-# Optional — for calling your Gradio/Colab public API
-
-# Utilities
-numpy=
+numpy
 requests
 python-dotenv
