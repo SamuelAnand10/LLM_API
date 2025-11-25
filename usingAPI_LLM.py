@@ -146,48 +146,87 @@ def optionally_send_to_gradio(gradio_url: str, local_file_path: str):
         st.error(f"Failed to call Gradio endpoint: {e}")
         return None
 
-def send_query_to_gradio_api(gradio_url: str, question: str, max_new_tokens:int=128, temperature:float=0.7, top_p:float=0.95, use_rag:bool=False, top_k:int=4, show_docs:bool=False):
+def send_query_to_gradio_api(gradio_url: str, question: str, max_new_tokens:int=128,
+                             temperature:float=0.7, top_p:float=0.95,
+                             use_rag:bool=False, top_k:int=4, show_docs:bool=False,
+                             timeout: int = 30):
     """
-    Best-effort POST to a Gradio /api/predict/ endpoint.
-    The payload matches your Colab Gradio signature: [prompt, max_new_tokens, temperature, top_p, use_rag, top_k, show_docs]
-    If gradio_client is installed and the URL is reachable, prefer that.
-    Returns (status_code, json_response) or (None, None) on failure.
+    Robust POST to a Gradio share /api/predict/ endpoint.
+    Tries payloads that Gradio commonly expects, including fn_index.
+    Returns (status_code, response_json, debug_info)
+    - status_code may be None if request failed entirely.
+    - response_json is parsed JSON or a dict with 'raw_text' or 'error'.
+    - debug_info tells which URL/payloads were attempted.
     """
-    predict_url = os.path.join(gradio_url.rstrip("/"), "api/predict/")
-    payload = {
-        "data": [
-            question,
-            int(max_new_tokens),
-            float(temperature),
-            float(top_p),
-            bool(use_rag),
-            int(top_k),
-            bool(show_docs)
-        ]
-    }
+
+    base = gradio_url.rstrip("/") + "/"
+    predict_path = "api/predict/"
+    predict_url = urllib.parse.urljoin(base, predict_path)
+
+    # Build data (we assume your remote function signature ordering)
+    data_list = [
+        question,
+        int(max_new_tokens),
+        float(temperature),
+        float(top_p),
+        bool(use_rag),
+        int(top_k),
+        bool(show_docs)
+    ]
+
     headers = {"Content-Type": "application/json"}
-    # Try gradio_client first (if installed)
+    attempts = []
+
+    # 1) Try gradio_client if available (preferred)
     if HAVE_GRADIO:
         try:
             client = GradioClient(gradio_url)
-            # Note: gradio_client's predict may accept positional args matching the function signature
-            # We'll call predict with the same order: question, max_new_tokens, temperature, top_p, use_rag, top_k, show_docs
-            res = client.predict(question, int(max_new_tokens), float(temperature), float(top_p), bool(use_rag), int(top_k), bool(show_docs), api_name="/predict", timeout=60)
-            # gradio_client returns python structure already; wrap into a consistent dict
-            return 200, res
-        except Exception:
-            # fallback to HTTP POST
-            pass
+            # gradio_client.predict uses the python-callable signature, no fn_index needed
+            res = client.predict(question, int(max_new_tokens), float(temperature),
+                                 float(top_p), bool(use_rag), int(top_k), bool(show_docs),
+                                 api_name="/predict", timeout=timeout)
+            return 200, res, {"method": "gradio_client.predict", "url": gradio_url}
+        except Exception as e:
+            attempts.append({"method": "gradio_client.predict", "error": str(e)})
 
-    # HTTP POST fallback
-    try:
-        resp = requests.post(predict_url, json=payload, headers=headers, timeout=30)
+    # 2) Try POST with fn_index = 0 (most common)
+    payloads = [
+        {"fn_index": 0, "data": data_list},
+        # 3) fallback: no fn_index (some older/simple endpoints accept this)
+        {"data": data_list},
+        # 4) sometimes servers expect fn_index as string (rare) or query param; include query param attempt below
+    ]
+
+    for payload in payloads:
         try:
-            return resp.status_code, resp.json()
+            resp = requests.post(predict_url, json=payload, headers=headers, timeout=timeout)
+            try:
+                j = resp.json()
+            except Exception:
+                j = {"raw_text": resp.text}
+            attempts.append({"url": predict_url, "payload": payload, "status_code": resp.status_code, "response_preview": str(j)[:500]})
+            # 200-299 -> success
+            if 200 <= resp.status_code < 300:
+                return resp.status_code, j, {"attempts": attempts}
+        except Exception as e:
+            attempts.append({"url": predict_url, "payload": payload, "error": str(e)})
+
+    # 5) Try adding fn_index as query parameter (some edge cases)
+    try:
+        qurl = predict_url + "?fn_index=0"
+        resp = requests.post(qurl, json={"data": data_list}, headers=headers, timeout=timeout)
+        try:
+            j = resp.json()
         except Exception:
-            return resp.status_code, {"raw_text": resp.text}
+            j = {"raw_text": resp.text}
+        attempts.append({"url": qurl, "payload": {"data": data_list}, "status_code": resp.status_code, "response_preview": str(j)[:500]})
+        if 200 <= resp.status_code < 300:
+            return resp.status_code, j, {"attempts": attempts}
     except Exception as e:
-        return None, {"error": str(e)}
+        attempts.append({"url": predict_url + "?fn_index=0", "error": str(e)})
+
+    # Nothing worked
+    return None, {"error": "All attempts failed", "attempts": attempts}, {"attempts": attempts}
 
 # ---------- Streamlit UI ----------
 st.set_page_config(page_title="RAG uploader (Streamlit)", layout="centered")
