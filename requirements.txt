@@ -8,3 +8,4 @@ sentencepiece
 huggingface_hub
 tqdm
 gradio_client
+pinecone
