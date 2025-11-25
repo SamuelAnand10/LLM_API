@@ -1,133 +1,192 @@
+# app_streamlit_rag.py
+import os
 import streamlit as st
-from gradio_client import Client
+from uuid import uuid4
+from io import BytesIO
+import tempfile
 
-# --- Configuration and Aesthetics ---
+# PDF reading
+from PyPDF2 import PdfReader
 
-# Set up the page layout and title for an aesthetic look
-st.set_page_config(
-    page_title="AI Prompt Generator",
-    page_icon="✨",
-    layout="centered", # Centers the main content on wide screens
-    initial_sidebar_state="collapsed",
-)
+# Embedding + Pinecone
+from sentence_transformers import SentenceTransformer
+import pinecone
+import numpy as np
+from typing import List
 
-# Apply custom CSS for better visual appeal
-st.markdown(
-    """
-    <style>
-    .stApp {
-        background-color: #f0f2f6; /* Light gray background */
-        color: #1c1c1c;
-    }
-    /* Style the main "Generate" button */
-    .stButton>button {
-        background-color: #4CAF50; /* Primary green */
-        color: white;
-        border-radius: 12px;
-        font-weight: bold;
-        padding: 10px 24px;
-        box-shadow: 0 6px 10px rgba(0, 0, 0, 0.15);
-        transition: all 0.3s ease;
-    }
-    .stButton>button:hover {
-        background-color: #45a049;
-        transform: translateY(-2px);
-        box-shadow: 0 8px 12px rgba(0, 0, 0, 0.2);
-    }
-    /* Style for text area and containers */
-    .stTextArea textarea, .stContainer {
-        border-radius: 12px;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+# Optional: talk to your Gradio/Colab public URL (if you want)
+try:
+    from gradio_client import Client as GradioClient
+    HAVE_GRADIO = True
+except Exception:
+    HAVE_GRADIO = False
 
-# --- Core Logic ---
+# ---------- CONFIG (set via env vars or Streamlit secrets) ----------
+PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY", "")   # set in env / secrets
+PINECONE_ENV = os.environ.get("PINECONE_ENV", "us-east1")
+PINECONE_INDEX = os.environ.get("PINECONE_INDEX", "rag-files")
+GRADIO_PUBLIC_URL = os.environ.get("GRADIO_PUBLIC_URL", "https://f4b1bb5c13d8313f42.gradio.live/")  # optional
 
-# Use st.cache_resource to initialize the Gradio Client only once.
-# This significantly speeds up the app.
+# Developer-provided local path fallback (per dev instruction)
+DEV_UPLOADED_PATH = "/mnt/data/1814dcfa-776c-40c6-aedb-fea130de1f2a.png"
+
+# ---------- Helpers ----------
 @st.cache_resource
-def get_gradio_client():
-    """Initializes and returns the Gradio Client."""
-    CLIENT_URL = "https://f4b1bb5c13d8313f42.gradio.live/"
-    st.info(f"Connecting to Gradio endpoint at: `{CLIENT_URL}`")
+def load_embedder(model_name="sentence-transformers/all-MiniLM-L6-v2"):
+    return SentenceTransformer(model_name)
+
+def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
+    # Extract text with PyPDF2
+    r = PdfReader(BytesIO(pdf_bytes))
+    pages = []
+    for p in r.pages:
+        try:
+            pages.append(p.extract_text() or "")
+        except Exception:
+            pages.append("")
+    return "\n\n".join(pages).strip()
+
+def chunk_text(text: str, max_chars:int = 800) -> List[str]:
+    # simple chunker that prefers newline/space breaks
+    chunks = []
+    start = 0
+    N = len(text)
+    while start < N:
+        end = min(start + max_chars, N)
+        if end < N:
+            # try to break at newline or space
+            br = text.rfind("\n", start, end)
+            if br <= start:
+                br = text.rfind(" ", start, end)
+            if br > start:
+                end = br
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        start = end
+    return chunks
+
+@st.cache_resource
+def init_pinecone(api_key: str, env: str, index_name: str, dim: int):
+    if not api_key:
+        raise ValueError("PINECONE_API_KEY not set in environment.")
+    pinecone.init(api_key=api_key, environment=env)
+    if index_name not in pinecone.list_indexes():
+        pinecone.create_index(index_name, dimension=dim, metric="cosine")
+    return pinecone.Index(index_name)
+
+def index_chunks_to_pinecone(idx, embedder, title, chunks, source_path, batch_size=64):
+    n = len(chunks)
+    st.info(f"Indexing {n} chunks into Pinecone (index: {idx.index_name})...")
+    for i in range(0, n, batch_size):
+        batch = chunks[i:i+batch_size]
+        embeddings = embedder.encode(batch, normalize_embeddings=True)
+        upserts = []
+        for j, (txt, emb) in enumerate(zip(batch, embeddings)):
+            vec_id = f"{title.replace(' ','_')}_{i+j}_{uuid4().hex[:8]}"
+            metadata = {"title": title, "text": txt[:1000], "source": source_path}
+            upserts.append((vec_id, emb.tolist(), metadata))
+        idx.upsert(vectors=upserts)
+    st.success("Upserted to Pinecone.")
+
+def optionally_send_to_gradio(gradio_url: str, local_file_path: str):
+    if not HAVE_GRADIO:
+        st.warning("gradio_client not installed; skipping Gradio push.")
+        return None
+    client = GradioClient(gradio_url)
+    # best-effort call: if your Gradio app has an upload API, adjust api_name and payload accordingly
     try:
-        client = Client(CLIENT_URL)
-        return client
+        # some Gradio apps expect file path or URL as a string input; adapt to your app
+        res = client.predict(local_file_path, api_name="/upload", timeout=60)
+        st.info("Sent file to Gradio endpoint; response:")
+        st.write(res)
+        return res
     except Exception as e:
-        st.error(f"Failed to initialize Gradio Client. Please check the URL. Error: {e}")
+        st.error(f"Failed to call Gradio endpoint: {e}")
         return None
 
-client = get_gradio_client()
+# ---------- Streamlit UI ----------
+st.set_page_config(page_title="RAG uploader (Streamlit)", layout="centered")
 
-def get_prediction(client, prompt: str):
-    """
-    Calls the Gradio API with the fixed parameters from the user's original script.
-    """
-    API_NAME = "/lambda"
-    
-    try:
-        # Use st.spinner to show a dynamic loading state while fetching data
-        with st.spinner(f"Sending prompt and awaiting response..."):
-            result = client.predict(
-                q=prompt,
-                mt=200,    # Max Tokens
-                t=0.6,     # Temperature
-                p=0.9,    # Top P
-                api_name=API_NAME
-            )
-            return result
-    except Exception as e:
-        # Catch and display network or API errors gracefully
-        st.error(f"An error occurred during API call: {e}")
-        return None
+st.title("RAG PDF uploader → Pinecone")
+st.write("Upload a PDF, preview extracted text, then embed & push to Pinecone. Keys must be set via env vars or Streamlit secrets.")
 
-# --- Application UI ---
+uploaded_file = st.file_uploader("Upload PDF file", type=["pdf"])
 
-st.title("✨ AI Text Generation App")
-st.markdown("Powered by **Streamlit** and a **Gradio** hosted model.")
+# Allow user to optionally use the developer-provided local path as source
+use_dev_path = st.checkbox("(Dev) Use pre-uploaded file path as source metadata", value=False)
+if use_dev_path:
+    st.write("Using developer path as source:", DEV_UPLOADED_PATH)
 
-if client is None:
-    st.error("The Gradio client could not be initialized. Check console for details.")
-
+if uploaded_file is None and not use_dev_path:
+    st.info("Upload a PDF or enable dev fallback to proceed.")
 else:
-    # Text input for the user's prompt
-    prompt = st.text_area(
-        "**Enter Your Prompt**",
-        placeholder="e.g., Describe a futuristic city powered entirely by renewable energy.",
-        height=180
-    )
+    # choose title
+    title = st.text_input("Document title (for metadata / ids)", value=(uploaded_file.name if uploaded_file else "dev_file"))
 
-    st.markdown("---")
-    
-    # Button to trigger the generation
-    if st.button("Generate Response", type="primary", use_container_width=True):
-        if prompt:
-            # Clear previous results if any
-            st.session_state['result'] = get_prediction(client, prompt)
-            st.session_state['current_prompt'] = prompt
+    if uploaded_file:
+        # show size
+        st.write("Uploaded file:", uploaded_file.name, "| size:", uploaded_file.size, "bytes")
+        raw_bytes = uploaded_file.read()
+        # extract text
+        with st.spinner("Extracting text from PDF..."):
+            text = extract_text_from_pdf_bytes(raw_bytes)
+        if not text:
+            st.error("No extractable text found. If it's a scanned image PDF you need OCR (tesseract).")
         else:
-            st.warning("Please enter a prompt to begin generation.")
+            st.subheader("Preview of extracted text")
+            st.text_area("extracted_text_preview", text[:5000], height=300)
 
-    # Display Results only if a prediction has been made
-    if 'result' in st.session_state and st.session_state['result'] is not None:
-        st.subheader("Model Output")
-        
-        # Use a container with a border for a professional look
-        with st.container(border=True):
-            st.markdown("### 📝 Your Query")
-            st.info(st.session_state['current_prompt'])
-            
-            st.markdown("### 🤖 Response")
-            st.success(st.session_state['result'])
+    else:
+        # dev path fallback: we do not have the PDF bytes — metadata will point to the dev path
+        text = f"File referenced by dev path: {DEV_UPLOADED_PATH}"
+        st.markdown(f"**Note:** using dev fallback source: `{DEV_UPLOADED_PATH}`")
 
-        # Optional details footer
-        st.caption(f"Used API: `/lambda` | Max Tokens: 128 | Temp: 0.7 | Top P: 0.95")
+    # show action button
+    if st.button("Embed & Push to Pinecone"):
+        # load embedder
+        with st.spinner("Loading embedder..."):
+            embedder = load_embedder()
+            dim = embedder.get_sentence_embedding_dimension()
 
-st.divider()
-st.markdown(
-    "<div style='text-align: center; color: #777; font-size: small;'>Built with Streamlit & Gradio Client</div>",
-    unsafe_allow_html=True
-)
+        # init pinecone
+        try:
+            idx = init_pinecone(PINECONE_API_KEY, PINECONE_ENV, PINECONE_INDEX, dim)
+        except Exception as e:
+            st.error(f"Failed to init pinecone: {e}")
+            st.stop()
+
+        # chunk text (if upload had text); if using dev fallback, index a single doc referencing dev path
+        if uploaded_file and text:
+            chunks = chunk_text(text, max_chars=800)
+        else:
+            chunks = [f"Referenced file: {DEV_UPLOADED_PATH}"]
+
+        source_path = DEV_UPLOADED_PATH if use_dev_path else (uploaded_file.name if uploaded_file else DEV_UPLOADED_PATH)
+
+        # index
+        try:
+            index_chunks_to_pinecone(idx, embedder, title, chunks, source_path)
+        except Exception as e:
+            st.error(f"Failed to upsert vectors: {e}")
+            st.stop()
+
+        st.success("Done indexing into Pinecone.")
+
+        # optionally notify your Gradio/Colab app (best-effort)
+        if st.checkbox("Also send file path to Gradio/Colab endpoint (optional)"):
+            with st.spinner("Calling Gradio endpoint..."):
+                # choose path to send: we send the local path if using dev fallback, else you can write uploaded file to tmp and send that path
+                if use_dev_path:
+                    path_to_send = DEV_UPLOADED_PATH
+                else:
+                    # write uploaded file to a temp path so the Gradio side (if accessible) can fetch it
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+                    tmp.write(raw_bytes)
+                    tmp.flush()
+                    tmp.close()
+                    path_to_send = tmp.name
+                
+
+st.markdown("---")
+st.caption("Security: never commit your Pinecone API key. Revoke any keys you posted in public and create a new one.")
