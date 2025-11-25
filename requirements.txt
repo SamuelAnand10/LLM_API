@@ -8,25 +8,21 @@ sentencepiece
 huggingface_hub
 tqdm
 gradio_client
-
-streamlit==1.39.0
-
 # PDF processing
-PyPDF2==3.0.1
+PyPDF2
 
 # Embeddings
-sentence-transformers==2.2.2
-transformers==4.35.2
-tokenizers==0.14.1
-torch==2.2.2
+sentence-transformers
+transformers
+tokenizers
+torch
 
 # Pinecone
 pinecone
 
 # Optional — for calling your Gradio/Colab public API
-gradio_client==0.14.0
 
 # Utilities
-numpy==1.26.4
+numpy=
 requests
 python-dotenv
