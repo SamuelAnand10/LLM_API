@@ -77,7 +77,7 @@ def init_pinecone(api_key: str, env: str, index_name: str, dim: int):
     EMBED_DIM = embedder.get_sentence_embedding_dimension()
     try:
         pc.create_index(
-            name=INDEX_NAME,
+            name=PINECONE_INDEX,
             dimension=EMBED_DIM,
             metric="cosine",
             spec=ServerlessSpec(
