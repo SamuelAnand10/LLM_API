@@ -75,15 +75,15 @@ def init_pinecone(api_key: str, env: str, index_name: str, dim: int):
     pc = Pinecone(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
     EMBED_DIM = embedder.get_sentence_embedding_dimension()
     try:
-    pc.create_index(
-        name=INDEX_NAME,
-        dimension=EMBED_DIM,
-        metric="cosine",
-        spec=ServerlessSpec(
-            cloud="aws",
-            region=PINECONE_ENV
+        pc.create_index(
+            name=INDEX_NAME,
+            dimension=EMBED_DIM,
+            metric="cosine",
+            spec=ServerlessSpec(
+                cloud="aws",
+                region=PINECONE_ENV
+            )
         )
-    )
     print(f"Created Pinecone index: {INDEX_NAME}")
     except PineconeApiException as e:
     # Check if the error is due to the index already existing
