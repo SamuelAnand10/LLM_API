@@ -12,6 +12,7 @@ from PyPDF2 import PdfReader
 from sentence_transformers import SentenceTransformer
 from pinecone import Pinecone
 from pinecone import ServerlessSpec
+from pinecone.exceptions import PineconeApiException
 
 import numpy as np
 from typing import List
