@@ -74,9 +74,9 @@ def init_pinecone(api_key: str, env: str, index_name: str, dim: int):
         raise ValueError("PINECONE_API_KEY not set in environment.")
     pc = Pinecone(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
     EMBED_DIM = embedder.get_sentence_embedding_dimension()
-    if index_name not in pc.list_indexes():
-        pc.create_index(
-        name=PINECONE_INDEX,
+    try:
+    pc.create_index(
+        name=INDEX_NAME,
         dimension=EMBED_DIM,
         metric="cosine",
         spec=ServerlessSpec(
@@ -84,6 +84,14 @@ def init_pinecone(api_key: str, env: str, index_name: str, dim: int):
             region=PINECONE_ENV
         )
     )
+    print(f"Created Pinecone index: {INDEX_NAME}")
+    except PineconeApiException as e:
+    # Check if the error is due to the index already existing
+        if e.status == 409 and "ALREADY_EXISTS" in str(e.body):
+            print(f"Pinecone index '{INDEX_NAME}' already exists. Connecting to existing index.")
+        else:
+        # Re-raise other Pinecone API exceptions
+            raise e
     return pc.Index(index_name)
 
 def index_chunks_to_pinecone(idx, embedder, title, chunks, source_path, batch_size=64):
