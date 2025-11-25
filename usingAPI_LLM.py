@@ -7,6 +7,7 @@ import tempfile
 import requests
 import json
 import urllib.parse
+from typing import Tuple, Any, Dict
 
 
 # PDF reading
