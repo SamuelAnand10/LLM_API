@@ -334,34 +334,44 @@ if st.button("Send question to LLM"):
         st.error("GRADIO_PUBLIC_URL not set. Set the env var or Streamlit secrets to your Gradio share URL.")
     else:
         with st.spinner("Sending query to Gradio predict API..."):
-            status, resp = send_query_to_gradio_api(GRADIO_PUBLIC_URL, question, max_new_tokens=q_max_t, temperature=q_temp, top_p=q_top_p, use_rag=q_use_rag, top_k=q_top_k, show_docs=q_show_docs)
-            if status is None:
-                st.error(f"Request failed: {resp.get('error')}")
-                st.info("Common causes: Gradio share session expired, remote server blocks programmatic access, or wrong endpoint.")
-            else:
+            try:
+                # <-- NOTE: unpack three values (status, resp, debug)
+                status, resp, debug = send_query_to_gradio_api(
+                    GRADIO_PUBLIC_URL,
+                    question,
+                    max_new_tokens=q_max_t,
+                    temperature=q_temp,
+                    top_p=q_top_p,
+                    use_rag=q_use_rag,
+                    top_k=q_top_k,
+                    show_docs=q_show_docs,
+                )
+
+                # Show high-level result
                 st.write("Status:", status)
                 st.subheader("Model response (raw):")
-                # Gradio /api/predict/ often returns {"data": [...outputs...], "duration":..., ...}
-                if isinstance(resp, dict) and 'data' in resp and isinstance(resp['data'], list):
-                    # Usually the first element is model text; but remote apps vary — show everything
-                    try:
-                        # Prefer first item
-                        primary = resp['data'][0]
-                        # If primary is a string, show it raw; if list/dict, pretty-print
-                        if isinstance(primary, str):
-                            st.text_area("LLM output", primary, height=300)
-                        else:
-                            st.json(primary)
-                    except Exception:
-                        st.json(resp['data'])
-                    # If the remote app returned structured docs, try to display them too
-                    # Some remote implementations return the retrieved docs as a 2nd item or embedded in a dict
-                    st.markdown("----")
-                    st.subheader("Full response JSON")
-                    st.json(resp)
+                st.write(resp)
+
+                # Always show debug details to diagnose payload/endpoint issues
+                st.markdown("---")
+                st.subheader("Debug attempts (inspect to find correct fn_index / payload shape):")
+                st.json(debug)
+
+                # Helpful hint when common errors appear
+                if status is None:
+                    st.error("Request failed. See debug for attempted payloads and errors.")
+                    st.info("Common causes: expired Gradio share, wrong fn_index, or remote blocks programmatic access.")
                 else:
-                    # fallback: just print the whole response object
-                    st.write(resp)
+                    st.success("Request completed (see above).")
+
+            except Exception as e:
+                # Shouldn't normally happen because send_query_to_gradio_api catches exceptions,
+                # but keep a fallback to show full trace if something unexpected occurs.
+                import traceback
+                st.error("Unhandled exception when calling send_query_to_gradio_api:")
+                st.error(repr(e))
+                st.text(traceback.format_exc())
+
 
 st.markdown("---")
 st.caption("Security: never commit your Pinecone API key. Revoke any keys you posted in public and create a new one.")
