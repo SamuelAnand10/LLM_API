@@ -23,7 +23,7 @@ except Exception:
 
 # ---------- CONFIG (set via env vars or Streamlit secrets) ----------
 PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY", "")   # set in env / secrets
-PINECONE_ENV = os.environ.get("PINECONE_ENV", "us-east1")
+PINECONE_ENV = os.environ.get("PINECONE_ENV", "us-east-1")
 PINECONE_INDEX = os.environ.get("PINECONE_INDEX", "rag-files")
 GRADIO_PUBLIC_URL = os.environ.get("GRADIO_PUBLIC_URL", "https://f4b1bb5c13d8313f42.gradio.live/")  # optional
 
