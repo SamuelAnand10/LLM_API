@@ -4,6 +4,8 @@ import streamlit as st
 from uuid import uuid4
 from io import BytesIO
 import tempfile
+from gtts import gTTS
+import base64
 import requests
 import json
 import urllib.parse
@@ -219,6 +221,19 @@ def send_query_to_gradio_api(gradio_url: str, question: str, max_new_tokens:int=
     except Exception as e:
         return None, {"error": "Unexpected exception in send_query_to_gradio_api", "exception": repr(e), "trace": traceback.format_exc()}, debug
 
+def autoplay_audio(mp3_path):
+    with open(mp3_path, "rb") as f:
+        audio_bytes = f.read()
+    b64 = base64.b64encode(audio_bytes).decode()
+    st.markdown(
+        f"""
+        <audio autoplay controls>
+            <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+        </audio>
+        """,
+        unsafe_allow_html=True
+    )
+
 # ---------- Streamlit UI ----------
 st.set_page_config(page_title="RAG uploader (Streamlit)", layout="centered")
 
@@ -340,6 +355,11 @@ if st.button("Send question to LLM"):
                 st.write("Status:", status)
                 st.subheader("Model response (raw):")
                 st.write(resp)
+                tts = gTTS(text=resp, lang="en-uk")
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+                tts.save(tmp.name)
+                autoplay_audio(tmp.name)
+                st.success("Done! Your audio is playing automatically.")
 
                 # Always show debug details to diagnose payload/endpoint issues
                 st.markdown("---")
