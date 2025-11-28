@@ -36,7 +36,7 @@ except Exception:
 PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY", "pcsk_7PKoKb_AgCoHzfAv8u4j5NemXo3t4uELqLjj8f8tCsYf4oPTVXj9s2MAmZQgePgCVnUDvC")   # set in env / secrets
 PINECONE_ENV = os.environ.get("PINECONE_ENV", "us-east-1")
 PINECONE_INDEX = os.environ.get("PINECONE_INDEX", "rag-files")
-GRADIO_PUBLIC_URL = os.environ.get("GRADIO_PUBLIC_URL", "https://db43f68215cc039c06.gradio.live/")  # optional
+GRADIO_PUBLIC_URL = os.environ.get("GRADIO_PUBLIC_URL", "https://f883b90946b8a85e72.gradio.live/")  # optional
 GRADIO_PREDICT = os.path.join(GRADIO_PUBLIC_URL.rstrip("/"), "api/predict/")
 
 # Developer-provided local path fallback (per dev instruction)
